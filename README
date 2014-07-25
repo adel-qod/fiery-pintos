@@ -1,0 +1,22 @@
+My work to complete a pintos project
+
+Pintos is a skelton Operating System built at Stanford and used by OS students
+to build a more complete operating systems by completing some major components
+(tasks include work on scheduling, drivers(minor), virtual memory, file
+systems, and user program loading)
+
+Course link:
+http://web.stanford.edu/class/cs140/projects/pintos/pintos.html
+
+All of my work is subject to the MIT license 
+All of Pintos work is under their own license & work derived from UC Berkely
+falls under their respective license 
+For more details on license, check LICENSE
+
+For the documentation:
+	my-info/
+	plus find the DESIGNDOC in the respective directory of the subsystem
+
+Contact info:
+	Adel Qodmani
+	mpcadel@gmail.com
