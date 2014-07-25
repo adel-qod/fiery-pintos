@@ -14,28 +14,39 @@
 #### a different drive from the loader, so we don't take advantage of
 #### this.
 
-# Runs in real mode, which is a 16-bit segment.
+#### Runs in real mode, which is a 16-bit segment.
 	.code16
 
-# Set up segment registers.
-# Set stack to grow downward from 60 kB (after boot, the kernel
-# continues to use this stack for its initial thread).
-
+#### Set up segment registers.
+#### Set stack to grow downward from 60 kB (after boot, the kernel
+#### continues to use this stack for its initial thread).
 	sub %ax, %ax
 	mov %ax, %ds
 	mov %ax, %ss
 	mov $0xf000, %esp
 
-# Configure serial port so we can report progress without connected VGA.
-# See [IntrList] for details.
+	
+#### Configure serial port so we can report progress without connected VGA.
+#### See [IntrList] for details.
+####	
+#### Interrupt 0x14 when AH is 0 is used for serial port initilization
+#### input: AL (port parameters) , DX for port number
+#### 	Bitfields for port parameters:
+#### 	Bit(s)  Description     (Table 00300)
+####	7-5    data rate (110,150,300,600,1200,2400,4800,9600 bps)
+####	4-3    parity (00 or 10 = none, 01 = odd, 11 = even)
+####	2      stop bits (set = 2, clear = 1)
+####	1-0    data bits (00 = 5, 01 = 6, 10 = 7, 11 = 8)
+#### 0xe3 = 0b11100011
+#### output: AH line status (0xff for failure) and AL modem status
 	sub %dx, %dx			# Serial port 0.
 	mov $0xe3, %al			# 9600 bps, N-8-1.
-					# AH is already 0 (Initialize Port).
 	int $0x14			# Destroys AX.
 
-	call puts
-	.string "PiLo"
+	call puts			# subroutine written below 
+	.string "PiLo"			# simply inserts this below call instr
 
+	
 #### Read the partition table on each system hard disk and scan for a
 #### partition of type 0x20, which is the type that we use for a
 #### Pintos kernel.
@@ -46,7 +57,6 @@
 #### We print out status messages to show the disk and partition being
 #### scanned, e.g. hda1234 as we scan four partitions on the first
 #### hard disk.
-
 	mov $0x80, %dl			# Hard disk 0.
 read_mbr:
 	sub %ebx, %ebx			# Sector 0.
@@ -68,7 +78,7 @@ read_mbr:
 	jne next_drive
 
 	mov $446, %si			# Offset of partition table entry 1.
-	mov $'1', %al
+	mov $'1', %al			# Just to print 1 for first entry
 check_partition:
 	# Is it an unused partition?
 	cmpl $0, %es:(%si)
@@ -78,10 +88,11 @@ check_partition:
 	call putc
 
 	# Is it a Pintos kernel partition?
+	# 0x20 is an unused partition type
 	cmpb $0x20, %es:4(%si)
 	jne next_partition
 
-	# Is it a bootable partition?
+	# Is it a bootable partition? (0x00 do not boot, 0x80 bootable)
 	cmpb $0x80, %es:(%si)
 	je load_kernel
 
@@ -120,13 +131,13 @@ load_kernel:
 	# But we limit Pintos kernels to 512 kB for other reasons, so
 	# it's easy enough to just read the entire contents of the
 	# partition or 512 kB from disk, whichever is smaller.
-	mov %es:12(%si), %ecx		# EBP = number of sectors
-	cmp $1024, %ecx			# Cap size at 512 kB
-	jbe 1f
+	# EBP = number of sectors
+	mov %es:12(%si), %ecx		# es:12(si) = size of partition 
+	cmp $1024, %ecx			# Cap size at 512 kB (1024 sector)
+	jbe 1f				# jump if less or equal 
 	mov $1024, %cx
 1:
-
-	mov %es:8(%si), %ebx		# EBX = first sector
+	mov %es:8(%si), %ebx		# es:8(si) =  first sector number
 	mov $0x2000, %ax		# Start load address: 0x20000
 
 next_sector:
@@ -143,10 +154,22 @@ next_sector:
 1:
 
 	# Advance memory pointer and disk sector.
+	# To explain why we're adding 0x20:
+	# 0x20 = dec(32), remember that we're saving the data in a buffer
+	# at AX:0000 (which will be ES:0000) once we go next_sector and then
+	# call read_sector
+	# The physical address of AX:0000 = AX * 16 + 0000
+	# So changing AX by dec(32) changes the physical address by 512
+	# which is exactly the sector size
 	add $0x20, %ax
+	# EBX is used in read_sector as the first 32 bits of the sector to read
+	# we sat it at first to the number of the first sector of the parition
+	# and now we increment to the next sector
 	inc %bx
+	# cbx = partition size (sectors) or 1024 if the parititon size is
+	# more than 1024 sectors (above)
 	loop next_sector
-
+	
 	call puts
 	.string "\r"
 
@@ -162,9 +185,17 @@ next_sector:
 
 	mov $0x2000, %ax
 	mov %ax, %es
+	# 0x2000 = 8192 (and remember: phys = seg * 16 + off)
+	# 0x18 = 24
+	# es:0x18 = 8192 * 16 + 24 = 131096 = 0x20024
+	# Kernel is at 0x20000 + 0x24 (because ELF stores the address
+	# for the entry point at the 32th byte)
 	mov %es:0x18, %dx
+	# start and dx only contain the first 16 bits of the address (offset)
 	mov %dx, start
+	# the last two bytes of start now contain the segment address
 	movw $0x2000, start + 2
+	# make a long jump to where start points
 	ljmp *start
 
 read_failed:
@@ -181,10 +212,15 @@ start:
 #### code stream just after the call, and then returns to the byte
 #### just after the terminating null.  This subroutine preserves all
 #### general-purpose registers.
-
-puts:	xchg %si, %ss:(%esp)
+# ss:esp has the address of the instruction right next to 'call puts'
+# because call X pushes the address of the next thing in the obj file
+# in the stack
+# which is the address of the string (using .string directive)
+puts:	xchg %si, %ss:(%esp) 
 	push %ax
 next_char:
+	# cs is at 0x00 so we're addressing the string literal
+	# stored using the .string
 	mov %cs:(%si), %al
 	inc %si
 	test %al, %al
@@ -192,6 +228,7 @@ next_char:
 	call putc
 	jmp next_char
 1:	pop %ax
+	# whatever was in si before this call should get back to it
 	xchg %si, %ss:(%esp)
 	ret
 
@@ -221,30 +258,44 @@ putc:	pusha
 	mov $'\n', %al
 	jmp 1b
 
+	
 #### Sector read subroutine.  Takes a drive number in DL (0x80 = hard
 #### disk 0, 0x81 = hard disk 1, ...) and a sector number in EBX, and
 #### reads the specified sector into memory at ES:0000.  Returns with
 #### carry set on error, clear otherwise.  Preserves all
 #### general-purpose registers.
-
+####
+#### Uses BIOS interrupt 0x13 used for sector-based IO with the hard-drives and
+#### 	floppy drives.
+#### input: DL: contains disk ID (0x00 for floppy 1 0x01 for floppy 2 etc
+####		and 0x80 for hdd1 and 0x81 for hdd2 etc)
+####	    AH: Function (0x42 read sectors from drive, 0x43 write)
+####	    Disk Address Packet 16 bytes (Pointed to by DS:SI):
+####		[0] 	Size of the packet (usually 16)
+####		[1]	Always 0
+####		[2-3]	Number of sectors to transfer
+####		[4-7]	Transfer buffer (16 bit segment : 16 bit offset)
+####		[8-15]	absolute number of the start sector to read from
+#### output: AH return code	, CF set on error
 read_sector:
 	pusha
 	sub %ax, %ax
 	push %ax			# LBA sector number [48:63]
 	push %ax			# LBA sector number [32:47]
 	push %ebx			# LBA sector number [0:31]
-	push %es			# Buffer segment
+	push %es			# Buffer segment (filled before call)
 	push %ax			# Buffer offset (always 0)
 	push $1				# Number of sectors to read
-	push $16			# Packet size
+	push $16			# Packet size (sets first two bytes)
 	mov $0x42, %ah			# Extended read
-	mov %sp, %si			# DS:SI -> packet
+	mov %sp, %si			# DS:SI -> packet (SI points to packet)
 	int $0x13			# Error code in CF
-	popa				# Pop 16 bytes, preserve flags
+	popa				# Pop 16 bytes (the packet)
 popa_ret:
-	popa
+	popa				# Registers before the call
 	ret				# Error code still in CF
 
+	
 #### Command-line arguments and their count.
 #### This is written by the `pintos' utility and read by the kernel.
 #### The loader itself does not do anything with the command line.
