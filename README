@@ -5,6 +5,10 @@ to build a more complete operating systems by completing some major components
 (tasks include work on scheduling, drivers(minor), virtual memory, file
 systems, and user program loading)
 
+This is my work to complete all of the projects found at Stanford plus adding
+comments and documentation to explain all the other parts that are not covered
+and I deem important (such as bootloading)
+
 Course link:
 http://web.stanford.edu/class/cs140/projects/pintos/pintos.html
 
