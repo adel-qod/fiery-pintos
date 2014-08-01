@@ -1,0 +1,320 @@
+This file contains a tutorial about all that's needed to understand how an OS
+operates on the x86 architecture.
+
+I'll describe the modes of CPU operation, memory addressing, I/O controlling
+during the different stages of CPU operation, and all other information needed
+to understand these issues.
+
+Assumptions: CPU: Intel x86
+	     IBM Compatible PC
+
+------
+Available registers
+------
+General purpose registers:
+	EAX, EBX, ECX, EBP, ESP, EDX, EDI, ESI
+Segment registers:
+	CS, SS, DS, ES, FS, GS
+Debug registers: 
+        DB0 to DB7
+Control registers:
+	CR0 to CR4
+Others:
+	GDTR, LDTR, (others) 
+------
+Modes of operation
+------
+CPU Modes of operation: (only the ones relevant to our purpose):
+1- Real-Address Mode:
+   - No different execution privileges
+   - BIOS still operating (that is, you can issue interrupts to it to perform
+   tasks)
+   - Limited to 16-bit registers
+   - Addressing using segmentation of up to 20-bit address bus (segment:offset)
+   - All memory is available to all running programs
+2- Protected Mode:
+   - Introduces rings of execution privileges
+     Privileged instructions include the ones that:
+     Modify page tables, modify selectors, long jumps, change the CPU
+     privilege ring, modify IOPL, modify interrupt vectors, halt/reset CPU, etc
+   - Can no longer issue BIOS interrupts
+   - Limited to 32-bit registers
+   - Addressing using segmentation or paging of up to 32-bit address bus
+   - Memory access must be protected via either paging or segment descriptors
+   - Hardware support for interrupting programs (sysenter, sysexit etc)
+   - Allows IO Privilege Levels(IOPL) for IO-related instructions
+
+CPU starts operation in real-address mode
+CPU starts by default with the A20 memory line disabled (for backward
+compatibility)
+Programmer must switch the CPU manually from real to protected mode (
+------
+The Computer System Architecture:
+------
+All modern systems I am accustomed to are based on the Von Neumman Model (likely
+the system you're running too)
+
+These systems are usually built as follows:
+
+CPU ============= System Bus ========== Memory Controller ==== Memory
+    		      ||
+		      ||
+		      ||
+		      ||
+		  IO Devices   
+
+This is a simplification of course but it's sufficient for our purpose.
+(For more details: The CPU is connected to the North bridge <which can be
+on-die with the CPU> aka memory controller hub which connects to
+the VGA and RAM and the south bridge; the south bridge in turn connects to
+the IO devices and E-PCI devices as well)
+
+----
+System bus
+----
+The system bus is made up of three different buses:
+* Data bus: the bus used to transfer data between the CPU and the rest of the
+system, its size is usually of the same word-size of the CPU (that is, either
+16-bits, 32-bits or 64-bits)
+* Address bus: Connected to the Control Unit in the CPU for memory addressing
+and also connects the CPU to the IO Controller for I/O operations
+The number of lines in this bus determine how much memory/how many devices the
+CPU can address
+* Control bus: Determines the control information (read/write/interrupt a device
+for something)
+
+Do not forget that the system bus, in reality, is not connected to the devices
+directly but it instead connects the CPU to the I/O controller and the memory
+controller in the south and north bridges respectively.
+
+----
+Controller:
+----
+The memory controller is of no interest to us here because the only way to
+interface with it is indirectly; what happens is that whenever we issue a
+memory-related instruction, the address through the address bus will be sent to
+the memory controller which will check the control bus to know whether to
+read/write and finally it'll do hardware multiplexing.
+Non of that is really controllable through instructions.
+
+The I/O controller however is used directly because we need it to access all the
+IO devices.
+The I/O controller, like memory, expects addresses on the address bus and each
+address (typically an address range) refers to a specific device so when the
+processor wants to talk to say the keyboard, it places an address (usually 0x60
+or 0x64) on the address bus and sends information or reads information.
+How does the memory controller not get confused by this and sends/writes us some
+information in RAM? Because the control bus won't just contain read/write, it'll
+also have a line called I/O Device line to be set.
+When this line is set, the memory controller totally ignores the whatever is on
+the address bus while the I/O controller reads it, sends the address to all the
+devices it knows and waits till one replies and behaves accordingly
+
+These addresses are called Port numbers, they are software ports .. port
+mappings of devices really.
+
+Do not confuse these addresses with DMA; in DMA the device already puts its data
+in RAM so to change the data there you issue normal memory instructions.
+(Also, not all devices map their data in memory)
+
+However, to inform the CPU that you wanna do I/O operations, we have specially
+instructions, two important ones are 'in' and 'out'
+
+Example of manipulating I/O to read a character from keyboard:
+Keyboard uses port 0x60 for control and 0x64 for status
+If bit 1 (read 2nd bit) is set, it means the buffer contains data to be read
+By setting the control register to read, we can read its value
+
+WaitLoop:    in     al, 64h   ; Get status register value
+             and    al, 10b   ; Test bit 1 of status register
+             jz     WaitLoop  ; If status register bit not set, no data is in buffer
+             in     al, 60h   ; Its set--Get the byte from the buffer (Port 0x60), and store it
+
+How can we figure out the port numbers? Google for something called:
+Default x86 Port Address Assignments
+
+** Note about in/out instructions:
+These instructions are not privileged so you can call them from user-space
+However, for the processor to allow you to do this, the process needs to have
+the CPL <= IOPL (Current Privilege Level <= IO Privilege Level)
+
+
+Thanks to BrokenThorn OSDev series a lot; I borrowed their assembly instructions
+to use as an example and I used it to understand most of what I wrote here
+
+------
+Memory management
+------
+
+----
+Real mode
+----
+As previously mentioned, the CPU starts its operation in real-address mode which
+uses what's called a segmented addressing scheme.
+In this mode, CPU address no more than 1 MB of RAM through a pair of registers:
+base:offset (each made of 16 bits)
+
+The base contains the address of the first byte in a segment while the offset
+contains the byte number in the segment we're trying to access
+The memory is divided into 64 KB segments (which may overlap)
+To get the physical address of something in RAM, the following calculation is
+done:
+physical address = base * 16 + offset
+
+No protection whatsoever happens and the user can access all parts of RAM
+
+
+----
+Protected mode
+----
+
+* Segmentation: 
+Protected mode also forces us to use at least a minimal form of segmentation
+It differs from real-mode in that the base part of an address (base:offset) no
+longer contains an actual address but it contains a segment selector.
+The segment selector is used to select an entry in a table called Descriptor
+Table, in our case we'll only use Global Descriptor Table.
+
+The descriptor table contains segment descriptors each of 8 byte length and it's
+structured as follows:
+
+|31-----------------------16|15-----------------------0|
+|	Base 0:15	    |	      Limit 0:15       |
+|63-------56|55---52|51---48|47-------- 40|39--------32|
+|  Base     | Flags | Limit |   Access    |   Base     |
+|  24:31    |       | 16:19 |    Byte     |   16:23    |
+|-----------|-------|-------|-------------|------------|
+
+	       7			     0
+Access bytes: Pr | Priv | 1 | Ex | DC | RW | Ac
+       Pr: Present bit
+       Priv(2 bits): Privilege level 0 (highest) and 3 (lowest)
+       1: always one
+       Ex: Executable or not (1=exec)
+       DC: If data: 1= segments grow downward (in effect, it swaps the base and
+       	      	       limit so that the base becomes in higher addresses)
+           If code: 1= Confirming bit => code in this segment can only be
+       	      	       executed from an equal or lower privilege (lower as in
+       		       less privileged, outer ring)
+       RW: If data: Data can always be read so this flag represents whether it
+       	      	    can be written to
+           if code: code can never be written to so this flag represents whether
+       	      	    it be read
+       AC: Accessed bit, set it to 0 and the CPU will set it to 1 when accessed
+
+
+Flags: GR | Sz | 0 | 0
+       GR: If 1, treat limit in 4 KiB blocks, if 0 => in bytes
+       Sz: If 1 => 32 bit protected, if 0 => 16 bit protected
+       
+Segmentation and paging tasks are somewhat redundant regarding protection so
+we'll make a minimal use of segmentation in favor of using paging to enable
+proper protection & process separation.
+
+Still, x86 forces us to use a minimal segmentation setup so we have to set up at
+least two segments for kernel(code + data) and two for user (code + data).
+Since we'll rely mainly on paging, we can play a trick and make the memory
+completely flat regarding segmentation by setting the base address for all our
+segments as 0x00000000 and the limit of each segment is 0xffffffff effectively
+making the whole memory addressable by x86 a single flat segment.
+So, four segments are needed, why?
+The user segments are needed because the kernel segments will be prvl 0 and user
+has to have prvl 3 and we obviously cannot let the kernel segments be prvl 3 or
+else we won't be able to execute high privilege instructions.
+We need segment for code and one for data because we cannot do bit operations on
+segment descriptors that allow us to specify write/read/execute together so we
+have to set the code to be read/execute and the data to be read/write.
+The segment registers should contain the segment selectors so CS contains the
+segment selector for the code segment while SS, DS, ES, FS, GS contain the
+segment selector for the data segment.
+Segment selectors look like this:
+	|15----------3|2|1-0|
+	     index     T RPL (or CPL if CS)
+
+	     T = 1 => LDT; T = 0 => GDT 
+* Paging:
+Paging in x86 works as follows:
+CR3 holds the address of a data structure called page directory.
+The page directory has 1024 Page Directory Entries (PDEs), these PDEs point to
+another data structure called Page Table.
+Page Tables contain 1024 entries as well, but these entries are called Page
+Table Entries and are used to map virtual memory to physical memory.
+
+We focus on using paging to do all of the heavy lifting of our memory management
+as do most other modern operating systems
+
+The process of translating an address goes like this: (including the use of
+segmentation):
+
+	15 ----- 0				31 ------------------------ 0
+	Seg Selector				  Offset (effective address)
+	 |  					  	    | 
+	 |						    |
+	 |	|Descriptor table| 			    |
+	 |	|	    	 |			    |
+	 |	|		 |			    |
+	 |	|----------------|			    |
+	 |	|    Segment     |			    \/
+	 |--->  |   Descriptor   |------------------------->[+]
+	 	|----------------|			     |
+		|		 |			     |
+		------------------			     |
+							Linear Address
+				 31--------22|21-----------12|11------------0	
+			---------- Directory      Table            Offset
+			|	   	    ------|                     |
+			|		    |			        |
+			|		    |			        12
+			|		    10  Page Table  	        |
+			|		    |   |---------|	        |
+			|		    |   |	  |	        |
+			|   Page Directory  |   |---------| (page addr) |
+		        10    |---------|   --> |  PTE    |-----20-----[+]  
+			|     |         |       |---------|             |
+			|     |---------|	|	  |	        |
+			----> |   PDE   |--20-->|---------|	  Physical Address
+			      |---------|
+			      |         |
+			----> |---------|
+			|
+			32	   
+			|	   
+			--[CR3]
+
+* Notice the many 20s in addressing, these are normal because tables and pages
+  are aligned on 4KB boundaries so the first 12 bits are irrelevant (always 0)
+* In our case, the linear address is always the same as the effective address
+  because the segmentation we use basically does nothing
+  (base 0x00- and limit 0xff-)
+* The bits in CR3 are organized as follows:
+  2:0 - Ignored
+  3(PWT) - Page Level Write Through
+  4(PCD) - Page Level Cache Disable
+  11:5	 - Ignored
+  31:12  - Physical address of the 4 KByte aligned page directory
+  63:32  - Ignored (running 32-bit)
+* Page Directory Entries are 4 Bytes long and are organized as follows:
+  (For 4KByte tables)
+  0(P)   - Present (must be 1 to reference a page table)
+  1(R/W) - If 0 write is not enabled
+  2(U/S) - If 0 user-access is not enabled
+  3(PWT) - Page Level Write Through
+  4(PCD) - Page Level Cache Disable
+  5(A)   - Accessed, set by hardware
+  6	 - Ignored
+  7(PS)	 - If CR4.PSE=1 must be 0, otherwise ignored
+  11:8	 - Ignored
+  31:12	 - Physical address of the 4 KByte aligned page table
+* Page Table entries that maps a 4 KB page
+  0(P)   - Present (must be 1 to reference a page table)
+  1(R/W) - If 0 write is not enabled
+  2(U/S) - If 0 user-access is not enabled
+  3(PWT) - Page Level Write Through
+  4(PCD) - Page Level Cache Disable
+  5(A)   - Accessed, set by hardware
+  6(D)	 - Dirty; indicates whether software has written to this page
+  7(PAT) - If PAT is not enabled, ignored
+  8(G)	 - Global if CR4.PGE=1,determines whether the translation is global
+  	   ignored otherwise
+  11:9	 - Ignored
+  31:12	 - Physical address of the 4 KByte page referenced by this entry 

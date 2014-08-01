@@ -30,14 +30,14 @@ The loader mentioned above is contained in the file: ./src/threads/loader.S
 The BIOS after reading the MBR sector will load its contents in the physical
 address 0x7c00 to 0x7e00 (512 bytes) and jump execution to its beginning 
 The loader does the following:
-   1- Set up stack and data segment to start at 0x0000 
-   2- Start the stack at 0xf000 (~ 61kb) the stack grows downwards
-   3- Set up serial port for later usage
-   4- Read partition table on each hard disk and scan for a partition with type
-   0x20 (Pintos marker)
-   5- Once the partition with type 0x20 is found, the kernel image, which is in
-   ELF format, will be read and loaded then the loader jumps to the start()
-   routine found in ./src/threads/start.S
+    1- Set up stack and data segment to start at 0x0000 
+    2- Start the stack at 0xf000 (~ 61kb) the stack grows downwards
+    3- Set up serial port for later usage
+    4- Read partition table on each hard disk and scan for a partition with type
+        0x20 (Pintos marker)
+    5- Once the partition with type 0x20 is found, the kernel image, which is in
+    ELF format, will be read and loaded then the loader jumps to the start()
+    routine found in ./src/threads/start.S
 
 Note: By the end of the loader.S file you'll find the assembly directives to
 fill the rest of the file with 0s and then the 0xaa55 marker.
@@ -49,3 +49,24 @@ Start.S:
 This is the beginning of the kernel and all it mainly does is safely start the
 32-bit protected mode after setting up the needed information for that.
 It then transfers control to the main() function found in ./src/threads/init.c
+
+The procedure for starting the protected-mode is a bit ... here are the details:
+    1- Determine how much physical memory is available
+    2- Enable the A20 line
+       Because without enabling it, we always (even after protected mode) only
+       address stuff with 31 lines (A20 missing) so all the following parts of
+       memory will not be accessible:
+       1MB-2MB, 3MB-4MB, 5MB-6MB, etc.
+    3- Set up the segment descriptors in memory
+    4- Load their addresses in registers
+    5- Set up the paging directory and have 11 PDEs at its beginning
+       and 11 PDEs in its last fourth point to the same page tables
+    6- Set up paging tables that map to the first 64 MBs of RAM
+    7- Set the address of the page directory in CR3 and enable paging
+    8- Set segment selectors
+    9- Call kernel main :D
+
+    Drink a beer, we're really done loading now
+
+    Virtual addresses 0xc0000000 and 0x00000000 point to the same physical
+    memory 

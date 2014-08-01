@@ -25,7 +25,6 @@
 	mov %ax, %ss
 	mov $0xf000, %esp
 
-	
 #### Configure serial port so we can report progress without connected VGA.
 #### See [IntrList] for details.
 ####	
@@ -195,7 +194,7 @@ next_sector:
 	mov %dx, start
 	# the last two bytes of start now contain the segment address
 	movw $0x2000, start + 2
-	# make a long jump to where start points
+	# make a long jump to the address contained in start
 	ljmp *start
 
 read_failed:
@@ -219,7 +218,7 @@ start:
 puts:	xchg %si, %ss:(%esp) 
 	push %ax
 next_char:
-	# cs is at 0x00 so we're addressing the string literal
+	# we're addressing the string literal
 	# stored using the .string
 	mov %cs:(%si), %al
 	inc %si
